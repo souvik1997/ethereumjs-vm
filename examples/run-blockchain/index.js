@@ -1,6 +1,6 @@
 const Buffer = require('safe-buffer').Buffer // use for Node.js <4.5.0
 const async = require('async')
-const Trie = require('merkle-patricia-tree/secure')
+const createRemoteStateStorage = require('../../dist/remoteStateStorage.js')
 const Block = require('ethereumjs-block')
 const Blockchain = require('ethereumjs-blockchain')
 const BlockHeader = require('ethereumjs-block/header.js')
@@ -14,87 +14,6 @@ const rlp = utils.rlp
 const testData = require('./test-data')
 // inMemory blockchainDB
 var blockchainDB = levelMem()
-
-var state = new Trie()
-
-var blockchain = new Blockchain(blockchainDB)
-blockchain.ethash.cacheDB = level('./.cachedb')
-
-var vm = new VM({
-  state: state,
-  blockchain: blockchain
-})
-var genesisBlock = new Block()
-
-vm.on('beforeTx', function (tx) {
-  tx._homestead = true
-})
-
-vm.on('beforeBlock', function (block) {
-  block.header.isHomestead = function () {
-    return true
-  }
-})
-
-async.series([
-  // set up pre-state
-  function (next) {
-    setupPreConditions(state, testData, next)
-  },
-
-  // create and add genesis block
-  function (next) {
-    genesisBlock.header = new BlockHeader(
-                            testData.genesisBlockHeader
-                          )
-    blockchain.putGenesis(genesisBlock, next)
-  },
-
-  // add some following blocks
-  function (next) {
-    async.eachSeries(testData.blocks, eachBlock, next)
-
-    function eachBlock (raw, cb) {
-      try {
-        var block = new Block(
-            Buffer.from(raw.rlp.slice(2), 'hex'))
-
-        // forces the block into thinking they are homestead
-        block.header.isHomestead = function () {
-          return true
-        }
-        block.uncleHeaders.forEach(function (uncle) {
-          uncle.isHomestead = function () { return true }
-        })
-
-        blockchain.putBlock(block, function (err) {
-          cb(err)
-        })
-      } catch (err) {
-        cb()
-      }
-    }
-  },
-
-  // make sure the blocks check
-  // if a block is missing, vm.runBlockchain will fail
-  function runBlockchain (next) {
-    vm.runBlockchain(next)
-  },
-
-  // get the blockchain head
-  function getHead (next) {
-    vm.blockchain.getHead(function (err, block) {
-      // make sure the state is set before checking post conditions
-      state.root = block.header.stateRoot
-      next(err)
-    })
-  }
-], function () {
-  console.log('--- Finished processing the BlockChain ---')
-  console.log('New head:', '0x' + blockchain.meta.rawHead.toString('hex'))
-  console.log('Expected:', testData.lastblockhash)
-})
 
 function setupPreConditions (state, testData, done) {
   var keysOfPre = Object.keys(testData.pre)
@@ -162,3 +81,89 @@ function format (a, toZero, isHex) {
 
   return a
 }
+
+createRemoteStateStorage(function (err, state) {
+  if (err) {
+    console.log("failed to create remote state")
+  } else {
+
+    var blockchain = new Blockchain(blockchainDB)
+    blockchain.ethash.cacheDB = level('./.cachedb')
+
+    var vm = new VM({
+      state: state,
+      blockchain: blockchain
+    })
+    var genesisBlock = new Block()
+
+    vm.on('beforeTx', function (tx) {
+      tx._homestead = true
+    })
+
+    vm.on('beforeBlock', function (block) {
+      block.header.isHomestead = function () {
+        return true
+      }
+    })
+
+    async.series([
+      // set up pre-state
+      function (next) {
+        setupPreConditions(state, testData, next)
+      },
+
+      // create and add genesis block
+      function (next) {
+        genesisBlock.header = new BlockHeader(
+          testData.genesisBlockHeader
+        )
+        blockchain.putGenesis(genesisBlock, next)
+      },
+
+      // add some following blocks
+      function (next) {
+        async.eachSeries(testData.blocks, eachBlock, next)
+
+        function eachBlock (raw, cb) {
+          try {
+            var block = new Block(
+              Buffer.from(raw.rlp.slice(2), 'hex'))
+
+            // forces the block into thinking they are homestead
+            block.header.isHomestead = function () {
+              return true
+            }
+            block.uncleHeaders.forEach(function (uncle) {
+              uncle.isHomestead = function () { return true }
+            })
+
+            blockchain.putBlock(block, function (err) {
+              cb(err)
+            })
+          } catch (err) {
+            cb()
+          }
+        }
+      },
+
+      // make sure the blocks check
+      // if a block is missing, vm.runBlockchain will fail
+      function runBlockchain (next) {
+        vm.runBlockchain(next)
+      },
+
+      // get the blockchain head
+      function getHead (next) {
+        vm.blockchain.getHead(function (err, block) {
+          // make sure the state is set before checking post conditions
+          state.root = block.header.stateRoot
+          next(err)
+        })
+      }
+    ], function () {
+      console.log('--- Finished processing the BlockChain ---')
+      console.log('New head:', '0x' + blockchain.meta.rawHead.toString('hex'))
+      console.log('Expected:', testData.lastblockhash)
+    })
+  }
+})

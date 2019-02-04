@@ -1,10 +1,10 @@
 const tape = require('tape')
 const async = require('async')
 const VM = require('../')
-const Account = require('ethereumjs-account')
+const Account = require('ethereumjs-account').default
 const testUtil = require('./util')
-const Trie = require('merkle-patricia-tree/secure')
 const ethUtil = require('ethereumjs-util')
+const createRemoteStateStorage = require('../dist/remoteStateStorage.js')
 const BN = ethUtil.BN
 
 var testCases = [
@@ -61,52 +61,57 @@ var testData = {
 tape('test constantinople SSTORE (eip-1283)', function (t) {
   testCases.forEach(function (params, i) {
     t.test('should correctly run eip-1283 test #' + i, function (st) {
-      let state = new Trie()
-      let results
-      let account
+      createRemoteStateStorage(function (err, state) {
+        if (err) {
+          console.log("failed to create remote state")
+        } else {
+          let results
+          let account
 
-      testData.exec.code = params.code
-      testData.exec.gas = params.usedGas
-      testData.pre['0x01'].storage['0x'] = params.original
+          testData.exec.code = params.code
+          testData.exec.gas = params.usedGas
+          testData.pre['0x01'].storage['0x'] = params.original
 
-      async.series([
-        function (done) {
-          let acctData = testData.pre[testData.exec.address]
-          account = new Account()
-          account.nonce = testUtil.format(acctData.nonce)
-          account.balance = testUtil.format(acctData.balance)
-          testUtil.setupPreConditions(state, testData, done)
-        },
-        function (done) {
-          state.get(Buffer.from(testData.exec.address, 'hex'), function (err, data) {
-            let a = new Account(data)
-            account.stateRoot = a.stateRoot
-            done(err)
-          })
-        },
-        function (done) {
-          let block = testUtil.makeBlockFromEnv(testData.env)
-          let vm = new VM({state: state, hardfork: 'constantinople'})
-          let runCodeData = testUtil.makeRunCodeData(testData.exec, account, block)
-          vm.runCode(runCodeData, function (err, r) {
-            if (r) {
-              results = r
+          async.series([
+            function (done) {
+              let acctData = testData.pre[testData.exec.address]
+              account = new Account()
+              account.nonce = testUtil.format(acctData.nonce)
+              account.balance = testUtil.format(acctData.balance)
+              testUtil.setupPreConditions(state, testData, done)
+            },
+            function (done) {
+              state.get(Buffer.from(testData.exec.address, 'hex'), function (err, data) {
+                let a = new Account(data)
+                account.stateRoot = a.stateRoot
+                done(err)
+              })
+            },
+            function (done) {
+              let block = testUtil.makeBlockFromEnv(testData.env)
+              let vm = new VM({state: state, hardfork: 'constantinople'})
+              let runCodeData = testUtil.makeRunCodeData(testData.exec, account, block)
+              vm.runCode(runCodeData, function (err, r) {
+                if (r) {
+                  results = r
+                }
+                done(err)
+              })
+            },
+            function (done) {
+              if (testData.gas) {
+                let actualGas = results.gas.toString()
+                let expectedGas = new BN(testUtil.format(testData.gas)).toString()
+                t.equal(actualGas, expectedGas, 'valid gas usage')
+                t.equals(results.gasRefund.toNumber(), params.refund, 'valid gas refund')
+              }
+              done()
             }
-            done(err)
+          ], function (err) {
+            t.assert(!err)
+            st.end()
           })
-        },
-        function (done) {
-          if (testData.gas) {
-            let actualGas = results.gas.toString()
-            let expectedGas = new BN(testUtil.format(testData.gas)).toString()
-            t.equal(actualGas, expectedGas, 'valid gas usage')
-            t.equals(results.gasRefund.toNumber(), params.refund, 'valid gas refund')
-          }
-          done()
         }
-      ], function (err) {
-        t.assert(!err)
-        st.end()
       })
     })
   })

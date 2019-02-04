@@ -2,7 +2,7 @@ const { promisify } = require('util')
 const tape = require('tape')
 const util = require('ethereumjs-util')
 const Block = require('ethereumjs-block')
-const Trie = require('merkle-patricia-tree/secure')
+const createRemoteStateStorage = require('../../lib/remoteStateStorage.js')
 const VM = require('../../lib/index')
 const { setupVM } = require('./utils')
 const { setupPreConditions } = require('../util')
@@ -24,12 +24,17 @@ tape('VM with fake blockchain', (t) => {
   })
 
   t.test('should work with trie (state) provided', (st) => {
-    let trie = new Trie()
-    trie.isTestTrie = true
-    let vm = new VM({ state: trie, activatePrecompiles: true })
-    st.notEqual(vm.stateManager._trie.root, util.KECCAK256_RLP, 'it has different root')
-    st.ok(vm.stateManager._trie.isTestTrie, 'it works on trie provided')
-    st.end()
+    createRemoteStateStorage(function (err, remoteStateStorage) {
+      if (err) {
+        console.log("failed to create remote state")
+      } else {
+        remoteStateStorage.isTestTrie = true
+        let vm = new VM({ remoteStateStorage: remoteStateStorage, activatePrecompiles: true })
+        st.notEqual(vm.stateManager._remoteStateStorage.root, util.KECCAK256_RLP, 'it has different root')
+        st.ok(vm.stateManager._remoteStateStorage.isTestTrie, 'it works on trie provided')
+        st.end()
+      }
+    })
   })
 
   t.test('should only accept valid chain and fork', (st) => {

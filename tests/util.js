@@ -2,7 +2,8 @@ const async = require('async')
 const utils = require('ethereumjs-util')
 const BN = utils.BN
 const rlp = utils.rlp
-const Account = require('ethereumjs-account')
+const Account = require('ethereumjs-account').default
+
 const Transaction = require('ethereumjs-tx')
 const Block = require('ethereumjs-block')
 
@@ -27,7 +28,7 @@ exports.dumpState = function (state, cb) {
     return new Promise((resolve, reject) => {
       let storage = {}
       let storageTrie = state.copy()
-      storageTrie.root = account.stateRoot
+      storageTrie.setRoot(account.stateRoot)
       let storageRS = storageTrie.createReadStream()
 
       storageRS.on('data', function (data) {
@@ -177,44 +178,46 @@ exports.verifyAccountPostConditions = function (state, address, account, acctDat
   t.equal(format(account.nonce, true).toString('hex'), format(acctData.nonce, true).toString('hex'), 'correct nonce')
 
   // validate storage
-  var origRoot = state.root
-  var storageKeys = Object.keys(acctData.storage)
+  state.getRoot(function (err, origRoot) {
+    assert(!err)
+    var storageKeys = Object.keys(acctData.storage)
 
-  var hashedStorage = {}
-  for (var key in acctData.storage) {
-    hashedStorage[utils.keccak256(utils.setLength(Buffer.from(key.slice(2), 'hex'), 32)).toString('hex')] = acctData.storage[key]
-  }
+    var hashedStorage = {}
+    for (var key in acctData.storage) {
+      hashedStorage[utils.keccak256(utils.setLength(Buffer.from(key.slice(2), 'hex'), 32)).toString('hex')] = acctData.storage[key]
+    }
 
-  if (storageKeys.length > 0) {
-    state.root = account.stateRoot
-    var rs = state.createReadStream()
-    rs.on('data', function (data) {
-      var key = data.key.toString('hex')
-      var val = '0x' + rlp.decode(data.value).toString('hex')
+    if (storageKeys.length > 0) {
+      state.setRoot(account.stateRoot)
+      var rs = state.createReadStream()
+      rs.on('data', function (data) {
+        var key = data.key.toString('hex')
+        var val = '0x' + rlp.decode(data.value).toString('hex')
 
-      if (key === '0x') {
-        key = '0x00'
-        acctData.storage['0x00'] = acctData.storage['0x00'] ? acctData.storage['0x00'] : acctData.storage['0x']
-        delete acctData.storage['0x']
-      }
-
-      t.equal(val, hashedStorage[key], 'correct storage value')
-      delete hashedStorage[key]
-    })
-
-    rs.on('end', function () {
-      for (var key in hashedStorage) {
-        if (hashedStorage[key] !== '0x00') {
-          t.fail('key: ' + key + ' not found in storage')
+        if (key === '0x') {
+          key = '0x00'
+          acctData.storage['0x00'] = acctData.storage['0x00'] ? acctData.storage['0x00'] : acctData.storage['0x']
+          delete acctData.storage['0x']
         }
-      }
 
-      state.root = origRoot
+        t.equal(val, hashedStorage[key], 'correct storage value')
+        delete hashedStorage[key]
+      })
+
+      rs.on('end', function () {
+        for (var key in hashedStorage) {
+          if (hashedStorage[key] !== '0x00') {
+            t.fail('key: ' + key + ' not found in storage')
+          }
+        }
+
+        state.setRoot(origRoot)
+        cb()
+      })
+    } else {
       cb()
-    })
-  } else {
-    cb()
-  }
+    }
+  })
 }
 
 /**
@@ -361,35 +364,39 @@ exports.setupPreConditions = function (state, testData, done) {
     account.balance = format(acctData.balance)
 
     var codeBuf = Buffer.from(acctData.code.slice(2), 'hex')
-    var storageTrie = state.copy()
-    storageTrie.root = null
+    state.copy(function (err, storageTrie) {
+      storageTrie.setRoot(null)
+      async.series([
 
-    async.series([
+        function (cb2) {
+          var keys = Object.keys(acctData.storage)
 
-      function (cb2) {
-        var keys = Object.keys(acctData.storage)
+          async.forEachSeries(keys, function (key, cb3) {
+            var val = acctData.storage[key]
+            val = rlp.encode(Buffer.from(val.slice(2), 'hex'))
+            key = utils.setLength(Buffer.from(key.slice(2), 'hex'), 32)
 
-        async.forEachSeries(keys, function (key, cb3) {
-          var val = acctData.storage[key]
-          val = rlp.encode(Buffer.from(val.slice(2), 'hex'))
-          key = utils.setLength(Buffer.from(key.slice(2), 'hex'), 32)
+            storageTrie.put(key, val, function (err) {
+              cb3()
+            })
+          }, cb2)
+        },
+        function (cb2) {
+          account.setCode(state, codeBuf, cb2)
+        },
+        function (cb2) {
+          storageTrie.getRoot(function (err, storageTrieRoot) {
+            account.stateRoot = storageTrieRoot
+            if (testData.exec && key === testData.exec.address) {
+              testData.root = storageTrieRoot
+            }
 
-          storageTrie.put(key, val, cb3)
-        }, cb2)
-      },
-      function (cb2) {
-        account.setCode(state, codeBuf, cb2)
-      },
-      function (cb2) {
-        account.stateRoot = storageTrie.root
-
-        if (testData.exec && key === testData.exec.address) {
-          testData.root = storageTrie.root
+            state.put(Buffer.from(utils.stripHexPrefix(key), 'hex'), account.serialize(), function () {
+              cb2()
+            })
+          })
         }
-        state.put(Buffer.from(utils.stripHexPrefix(key), 'hex'), account.serialize(), function () {
-          cb2()
-        })
-      }
-    ], callback)
+      ], callback)
+    })
   }, done)
 }
